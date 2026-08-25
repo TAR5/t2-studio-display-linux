@@ -1,0 +1,86 @@
+From: Jerry Zuo <jerry.zuo@amd.com>
+Subject: [PATCH] drm/amd/display: hide Apple Studio Display secondary tile
+
+Backported to Linux 7.1, where connector detection still lives in
+amdgpu_dm.c. Hide the secondary tile so userspace configures the full 5K
+mode advertised by the primary link.
+
+Reviewed-by: Mario Limonciello <mario.limonciello@amd.com>
+Reviewed-by: Sun peng Li <sunpeng.li@amd.com>
+Signed-off-by: Jerry Zuo <jerry.zuo@amd.com>
+Signed-off-by: Wayne Lin <wayne.lin@amd.com>
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -7596,6 +7596,32 @@ amdgpu_dm_connector_poll(struct amdgpu_dm_connector *aconnector, bool force)
+ 	return status;
+ }
+ 
++/* Hide the secondary SST tile so compositors configure one 5K stream. */
++static bool amdgpu_dm_hide_secondary_tile_from_userspace(struct drm_connector *connector)
++{
++	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
++
++	if (!aconnector->dc_sink)
++		return false;
++
++	if (!aconnector->dc_sink->edid_caps.panel_patch.disable_second_tile)
++		return false;
++
++	drm_edid_connector_update(connector, aconnector->drm_edid);
++
++	if (!connector->has_tile)
++		return false;
++
++	if (!connector->tile_h_loc && !connector->tile_v_loc)
++		return false;
++
++	drm_dbg_kms(connector->dev,
++		    "[CONNECTOR:%d:%s] hiding secondary Apple Studio Display tile from userspace\n",
++		    connector->base.id, connector->name);
++
++	return true;
++}
++
+ /**
+  * amdgpu_dm_connector_detect() - Detect whether a DRM connector is connected to a display
+  *
+@@ -7638,6 +7664,9 @@ amdgpu_dm_connector_detect(struct drm_connector *connector, bool force)
+ 		(!aconnector->dc_sink || aconnector->dc_sink->edid_caps.analog))
+ 		return amdgpu_dm_connector_poll(aconnector, force);
+ 
++	if (amdgpu_dm_hide_secondary_tile_from_userspace(connector))
++		return connector_status_disconnected;
++
+ 	return (aconnector->dc_sink ? connector_status_connected :
+ 			connector_status_disconnected);
+ }
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c
+@@ -136,6 +136,13 @@ STATIC_IFN_KUNIT void apply_edid_quirks(struct dc_link *link, struct edid *edid,
+ 		drm_dbg_driver(dev, "Skip PHY SSC reduction on panel id %X\n", panel_id);
+ 		link->wa_flags.skip_phy_ssc_reduction = true;
+ 		break;
++	/* Hide the secondary tile exposed by Apple Studio Display. */
++	case drm_edid_encode_panel_id('A', 'P', 'P', 0xAE3A):
++	case drm_edid_encode_panel_id('A', 'P', 'P', 0xAE42):
++	case drm_edid_encode_panel_id('A', 'P', 'P', 0xAE46):
++		drm_dbg_driver(dev, "Hiding secondary tile on panel id %X\n", panel_id);
++		edid_caps->panel_patch.disable_second_tile = true;
++		break;
+ 	default:
+ 		return;
+ 	}
+diff --git a/drivers/gpu/drm/amd/display/dc/dc_types.h b/drivers/gpu/drm/amd/display/dc/dc_types.h
+--- a/drivers/gpu/drm/amd/display/dc/dc_types.h
++++ b/drivers/gpu/drm/amd/display/dc/dc_types.h
+@@ -188,6 +188,7 @@ struct dc_panel_patch {
+ 	unsigned int skip_audio_sab_check;
+ 	unsigned int mst_start_top_delay;
+ 	unsigned int remove_sink_ext_caps;
++	bool disable_second_tile;
+ 	unsigned int disable_colorimetry;
+ 	uint8_t blankstream_before_otg_off;
+ 	bool oled_optimize_display_on;

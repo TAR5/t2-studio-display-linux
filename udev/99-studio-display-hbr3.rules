@@ -1,0 +1,3 @@
+# Apply the link workaround on AMD DisplayPort connector add/hotplug events.
+# The helper verifies the Apple Studio Display EDID before changing anything.
+ACTION=="add|change", SUBSYSTEM=="drm", ENV{DEVTYPE}=="drm_connector", DRIVERS=="amdgpu", RUN+="/usr/local/libexec/studio-display-hbr3 %k"

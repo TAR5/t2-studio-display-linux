@@ -1,0 +1,10 @@
+*.pkg.tar.*
+*.tar.*
+*.patch.zst
+*.patch.zst.sig
+kernel/src/
+kernel/pkg/
+kernel/patches/
+kernel/PKGBUILD.orig
+*.log
+*~

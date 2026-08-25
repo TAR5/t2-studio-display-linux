@@ -1,0 +1,81 @@
+#!/bin/sh
+
+# Force four-lane HBR3 only for known Apple Studio Display EDIDs. The AMD
+# debugfs write immediately retrains an active link and becomes the preferred
+# setting for the remainder of the connection.
+
+connector_name=${1:-}
+case "$connector_name" in
+	card*-DP-*) ;;
+	*) exit 0 ;;
+esac
+
+connector_path="/sys/class/drm/$connector_name"
+status=$(cat "$connector_path/status" 2>/dev/null) || exit 0
+[ "$status" = "connected" ] || exit 0
+
+disable_internal_monitor() {
+	# Udev runs outside the desktop session. Schedule Omarchy's native toggle
+	# in the active user's systemd manager after Hyprland has added the Studio
+	# Display. Omarchy's existing monitor watcher restores the panel on removal.
+	[ -x /usr/bin/omarchy-hyprland-monitor-internal ] || return 0
+
+	for runtime_dir in /run/user/[0-9]*; do
+		[ -d "$runtime_dir/hypr" ] || continue
+		uid=${runtime_dir##*/}
+		passwd_entry=$(/usr/bin/getent passwd "$uid") || continue
+		username=${passwd_entry%%:*}
+		home=$(printf '%s\n' "$passwd_entry" | /usr/bin/cut -d: -f6)
+
+		for socket in "$runtime_dir"/hypr/*/.socket.sock; do
+			[ -S "$socket" ] || continue
+			instance_dir=${socket%/.socket.sock}
+			instance=${instance_dir##*/}
+
+			if /usr/bin/runuser -u "$username" -- /usr/bin/env \
+				XDG_RUNTIME_DIR="$runtime_dir" \
+				DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_dir/bus" \
+				/usr/bin/systemd-run --user --quiet --collect --on-active=2s \
+				--setenv="HOME=$home" \
+				--setenv="PATH=/usr/local/bin:/usr/bin" \
+				--setenv="XDG_RUNTIME_DIR=$runtime_dir" \
+				--setenv="DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_dir/bus" \
+				--setenv="HYPRLAND_INSTANCE_SIGNATURE=$instance" \
+				/usr/bin/omarchy-hyprland-monitor-internal off \
+				>/dev/null 2>&1; then
+				return 0
+			fi
+		done
+	done
+}
+
+# EDID bytes 8-9 encode manufacturer APP; bytes 10-11 are the little-endian
+# product ID. Retry briefly because a hotplug event can precede EDID exposure.
+attempt=0
+signature=
+while [ "$attempt" -lt 10 ]; do
+	signature=$(od -An -tx1 -j8 -N4 "$connector_path/edid" 2>/dev/null | tr -d ' \n')
+	case "$signature" in
+		06103aae|061042ae|061046ae) break ;;
+	esac
+	attempt=$((attempt + 1))
+	sleep 0.1
+done
+
+case "$signature" in
+	06103aae|061042ae|061046ae) ;;
+	*) exit 0 ;;
+esac
+
+pci_device=$(basename "$(readlink -f "$connector_path/device/device")")
+drm_connector=${connector_name#*-}
+link_settings="/sys/kernel/debug/dri/$pci_device/$drm_connector/link_settings"
+[ -w "$link_settings" ] || exit 0
+
+current=$(tr -d '\000' < "$link_settings")
+case "$current" in
+	*"Current:  4  0x1e"*) ;;
+	*) printf '4 0x1e' > "$link_settings" ;;
+esac
+
+disable_internal_monitor
